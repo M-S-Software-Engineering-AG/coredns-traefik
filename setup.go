@@ -48,7 +48,6 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 
 	cfg.baseUrl = defaultBaseUrl
 
-	mode := -1
 	for c.Next() {
 		args := c.RemainingArgs()
 		if len(args) == 1 {
@@ -83,24 +82,35 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 				}
 				val := c.Val()
 				cfg.cname = &val
-				if mode == 1 {
-					return traefik, c.Err("traefik cname and a are mutually exclusive")
+				if cfg.a != nil || cfg.aaaa != nil {
+					return traefik, c.Err("traefik cname is mutually exclusive with a/aaaa")
 				}
-				mode = 0
 			case "a":
 				val := c.RemainingArgs()
 				ips, err := convertStringsToIPs(val)
 				if err != nil {
 					return traefik, c.Errf("traefik config failed to parse ip addresses: %s", err)
 				}
-				cfg.a = &ips
 				if len(ips) == 0 {
 					return traefik, c.ArgErr()
 				}
-				if mode == 0 {
-					return traefik, c.Err("traefik config cname and a are mutually exclusive")
+				cfg.a = &ips
+				if cfg.cname != nil {
+					return traefik, c.Err("traefik cname is mutually exclusive with a/aaaa")
 				}
-				mode = 1
+			case "aaaa":
+				val := c.RemainingArgs()
+				ips, err := convertStringsToIPv6s(val)
+				if err != nil {
+					return traefik, c.Errf("traefik config failed to parse ipv6 addresses: %s", err)
+				}
+				if len(ips) == 0 {
+					return traefik, c.ArgErr()
+				}
+				cfg.aaaa = &ips
+				if cfg.cname != nil {
+					return traefik, c.Err("traefik cname is mutually exclusive with a/aaaa")
+				}
 			case "refreshinterval":
 				if !c.NextArg() {
 					return traefik, c.ArgErr()
@@ -143,8 +153,8 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 		}
 	}
 
-	if mode == -1 {
-		return traefik, c.Errf("traefik config requires a cname or a")
+	if cfg.cname == nil && cfg.a == nil && cfg.aaaa == nil {
+		return traefik, c.Errf("traefik config requires a cname, a, or aaaa")
 	}
 
 	traefikClient, err := NewTraefikClient(cfg)
@@ -158,6 +168,7 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 	log.Infof("base url ............ %s", cfg.baseUrl)
 	log.Infof("cname ............... %v", cfg.cname)
 	log.Infof("a ................... %v", cfg.a)
+	log.Infof("aaaa ................ %v", cfg.aaaa)
 	log.Infof("ttl ................. %v", cfg.ttl)
 	log.Infof("refreshInterval ..... %v", cfg.refreshInterval)
 	log.Infof("insecureSkipVerify .. %v", cfg.insecureSkipVerify)
@@ -176,6 +187,18 @@ func convertStringsToIPs(ips []string) ([]net.IP, error) {
 			return nil, fmt.Errorf("invalid IPv4 address: %s", ipStr)
 		}
 		result = append(result, ip.To4())
+	}
+	return result, nil
+}
+
+func convertStringsToIPv6s(ips []string) ([]net.IP, error) {
+	var result []net.IP
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil || ip.To4() != nil {
+			return nil, fmt.Errorf("invalid IPv6 address: %s", ipStr)
+		}
+		result = append(result, ip.To16())
 	}
 	return result, nil
 }

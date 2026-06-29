@@ -24,6 +24,7 @@ var log = clog.NewWithPlugin("traefik")
 type TraefikConfigEntry struct {
 	cname *string
 	a     *[]net.IP
+	aaaa  *[]net.IP
 	ttl   uint32
 }
 
@@ -35,6 +36,7 @@ type TraefikConfig struct {
 	baseUrl            *url.URL
 	cname              *string
 	a                  *[]net.IP
+	aaaa               *[]net.IP
 	ttl                uint32
 	refreshInterval    uint32
 	insecureSkipVerify bool
@@ -61,7 +63,7 @@ func (t *Traefik) Name() string { return "traefik" }
 func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
-	if state.QClass() != dns.ClassINET || state.QType() != dns.TypeA {
+	if state.QClass() != dns.ClassINET {
 		return plugin.NextOrFailure(t.Name(), t.Next, ctx, w, r)
 	}
 
@@ -69,15 +71,20 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 	qname := state.QName()
 	answers := []dns.RR{}
+	found := false
 	for _, q := range state.Req.Question {
 		find := strings.ToLower(q.Name[:len(q.Name)-1])
 
 		result := t.getEntry(find)
 		if result != nil {
-			if t.Config.cname != nil {
-				answers = cname(qname, t.Config.ttl, t.Config.cname)
-			} else if t.Config.a != nil {
-				answers = a(qname, t.Config.ttl, *t.Config.a)
+			found = true
+			switch {
+			case result.cname != nil:
+				answers = cname(qname, result.ttl, result.cname)
+			case state.QType() == dns.TypeA && result.a != nil:
+				answers = a(qname, result.ttl, *result.a)
+			case state.QType() == dns.TypeAAAA && result.aaaa != nil:
+				answers = aaaa(qname, result.ttl, *result.aaaa)
 			}
 		}
 	}
@@ -89,8 +96,12 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			return plugin.NextOrFailure(t.Name(), t.Next, ctx, w, r)
 		}
 
-		log.Debug("Returning NXDOMAIN")
-		m.Rcode = dns.RcodeNameError
+		if found {
+			log.Debug("Returning NODATA")
+		} else {
+			log.Debug("Returning NXDOMAIN")
+			m.Rcode = dns.RcodeNameError
+		}
 	}
 
 	m.SetReply(r)
@@ -130,8 +141,9 @@ func (t *Traefik) getEntry(host string) *TraefikConfigEntry {
 
 	if t.Config.resolveApiHost && !t.Config.apiHostnameIsIp && t.Config.apiHostname == host {
 		return &TraefikConfigEntry{
-			a:   t.Config.a,
-			ttl: t.Config.ttl,
+			a:    t.Config.a,
+			aaaa: t.Config.aaaa,
+			ttl:  t.Config.ttl,
 		}
 	}
 
@@ -176,14 +188,15 @@ func (t *Traefik) refresh(first bool) error {
 						}
 						adds += 1
 					}
-				} else if t.Config.a != nil {
+				} else {
 					_, exists := t.mappings[host]
 
 					if !exists {
-						log.Infof("+ %s -> %s", host, ConvertIPsToString(*t.Config.a))
+						log.Infof("+ %s -> a=%s aaaa=%s", host, ipsLog(t.Config.a), ipsLog(t.Config.aaaa))
 						t.mappings[host] = &TraefikConfigEntry{
-							a:   t.Config.a,
-							ttl: t.Config.ttl,
+							a:    t.Config.a,
+							aaaa: t.Config.aaaa,
+							ttl:  t.Config.ttl,
 						}
 						adds += 1
 					}
@@ -198,8 +211,8 @@ func (t *Traefik) refresh(first bool) error {
 		if !stillExists {
 			if t.Config.cname != nil {
 				log.Infof("- CNAME %s -> %s", cachedHost, *t.Config.cname)
-			} else if t.Config.a != nil {
-				log.Infof("- A %s -> %s", cachedHost, ConvertIPsToString(*t.Config.a))
+			} else {
+				log.Infof("- %s -> a=%s aaaa=%s", cachedHost, ipsLog(t.Config.a), ipsLog(t.Config.aaaa))
 			}
 			toDelete[cachedHost] = struct{}{}
 			deletes += 1
@@ -239,6 +252,17 @@ func a(zone string, ttl uint32, ips []net.IP) []dns.RR {
 	return answers
 }
 
+func aaaa(zone string, ttl uint32, ips []net.IP) []dns.RR {
+	answers := make([]dns.RR, len(ips))
+	for i, ip := range ips {
+		r := new(dns.AAAA)
+		r.Hdr = dns.RR_Header{Name: zone, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}
+		r.AAAA = ip
+		answers[i] = r
+	}
+	return answers
+}
+
 func cname(zone string, ttl uint32, target *string) []dns.RR {
 	answers := make([]dns.RR, 1)
 	r := new(dns.CNAME)
@@ -246,6 +270,13 @@ func cname(zone string, ttl uint32, target *string) []dns.RR {
 	r.Target = *target
 	answers[0] = r
 	return answers
+}
+
+func ipsLog(ips *[]net.IP) string {
+	if ips == nil {
+		return "-"
+	}
+	return ConvertIPsToString(*ips)
 }
 
 func ConvertIPsToString(ips []net.IP) string {
