@@ -142,14 +142,21 @@ refresh of data from the Traefik API.
 ## Building
 
 This plugin must be compiled into CoreDNS. Add it to
-[plugin.cfg](https://github.com/coredns/coredns/blob/master/plugin.cfg), early in the list so
-*traefik* runs before the plugins that serve the zone:
+[plugin.cfg](https://github.com/coredns/coredns/blob/master/plugin.cfg) **above the backend plugins
+that answer the zone** — `file`, `auto`, `secondary`, `etcd`, and `forward`. CoreDNS runs plugins in
+plugin.cfg order, and those plugins answer authoritatively (or forward upstream) without falling
+through, so if any of them runs before *traefik* the query for a discovered host is answered
+(NXDOMAIN, or an upstream reply) before *traefik* ever sees it. Placing it just before `file` puts it
+ahead of the whole cluster:
 
 ~~~ txt
 traefik:github.com/scottt732/coredns-traefik
 ~~~
 
 Then rebuild with `go generate && go build`, or `make`.
+
+A plugin ordered *before* *traefik* (such as `hosts`) will handle matching queries first; give it
+`fallthrough` so unmatched names reach *traefik* (see the *hosts* example above).
 
 ## Also See
 
