@@ -1,10 +1,8 @@
 package traefik
 
 import (
-	"bytes"
 	"context"
-	golog "log"
-	"strings"
+	"net"
 	"testing"
 
 	"github.com/coredns/coredns/plugin/pkg/dnstest"
@@ -13,25 +11,53 @@ import (
 	"github.com/miekg/dns"
 )
 
-func TestExample(t *testing.T) {
-	// Create a new Example Plugin. Use the test.ErrorHandler as the next plugin.
-	x := Traefik{Next: test.ErrorHandler()}
+// TestServeDNSMultipleInstances proves a single Traefik handler answers for
+// hosts discovered across more than one configured block.
+func TestServeDNSMultipleInstances(t *testing.T) {
+	cnameTarget := "traefik-a.example.org."
+	instA := &traefikInstance{
+		config: &TraefikConfig{ttl: 30},
+		mappings: TraefikConfigEntryMap{
+			"a.example.org": &TraefikConfigEntry{cname: &cnameTarget, ttl: 30},
+		},
+	}
+	ips := []net.IP{net.ParseIP("10.0.0.5")}
+	instB := &traefikInstance{
+		config: &TraefikConfig{ttl: 30},
+		mappings: TraefikConfigEntryMap{
+			"b.example.org": &TraefikConfigEntry{a: &ips, ttl: 30},
+		},
+	}
 
-	// Setup a new output buffer that is *not* standard output, so we can check if
-	// example is really being printed.
-	b := &bytes.Buffer{}
-	golog.SetOutput(b)
+	tk := &Traefik{
+		Next:      test.ErrorHandler(),
+		Instances: []*traefikInstance{instA, instB},
+	}
 
-	ctx := context.TODO()
-	r := new(dns.Msg)
-	r.SetQuestion("example.org.", dns.TypeA)
-	// Create a new Recorder that captures the result, this isn't actually used in this test
-	// as it just serves as something that implements the dns.ResponseWriter interface.
-	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+	tests := []struct {
+		qname  string
+		qtype  uint16
+		rcode  int
+		answer int
+	}{
+		{"a.example.org.", dns.TypeA, dns.RcodeSuccess, 1}, // CNAME from instance A
+		{"b.example.org.", dns.TypeA, dns.RcodeSuccess, 1}, // A from instance B
+		{"unknown.example.org.", dns.TypeA, dns.RcodeNameError, 0},
+	}
 
-	// Call our plugin directly, and check the result.
-	x.ServeDNS(ctx, rec, r)
-	if a := b.String(); !strings.Contains(a, "[INFO] plugin/example: example") {
-		t.Errorf("Failed to print '%s', got %s", "[INFO] plugin/example: example", a)
+	for _, tc := range tests {
+		r := new(dns.Msg)
+		r.SetQuestion(tc.qname, tc.qtype)
+		rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+		if _, err := tk.ServeDNS(context.TODO(), rec, r); err != nil {
+			t.Fatalf("%s: expected no error, got %v", tc.qname, err)
+		}
+		if rec.Msg.Rcode != tc.rcode {
+			t.Errorf("%s: expected rcode %d, got %d", tc.qname, tc.rcode, rec.Msg.Rcode)
+		}
+		if len(rec.Msg.Answer) != tc.answer {
+			t.Errorf("%s: expected %d answers, got %d", tc.qname, tc.answer, len(rec.Msg.Answer))
+		}
 	}
 }

@@ -47,15 +47,21 @@ type TraefikConfig struct {
 	resolveApiHost     bool
 }
 
-type Traefik struct {
-	Next          plugin.Handler
-	Config        *TraefikConfig
-	TraefikClient *TraefikClient
-
+// traefikInstance is one configured `traefik` block: a Traefik API to poll and
+// the records to return for the hosts discovered there. Each instance runs its
+// own poller and keeps its own mappings.
+type traefikInstance struct {
+	config   *TraefikConfig
+	client   *TraefikClient
 	mappings TraefikConfigEntryMap
 	ready    bool
 	mutex    sync.RWMutex
-	Fall     fall.F
+}
+
+type Traefik struct {
+	Next      plugin.Handler
+	Instances []*traefikInstance
+	Fall      fall.F
 }
 
 func (t *Traefik) Name() string { return "traefik" }
@@ -90,6 +96,9 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 
 	m := new(dns.Msg)
+	m.SetReply(r)
+	m.Authoritative = true
+
 	if len(answers) == 0 {
 		if t.Fall.Through(qname) && t.Next != nil {
 			log.Debug("Falling through. 0 answers")
@@ -104,8 +113,6 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		}
 	}
 
-	m.SetReply(r)
-	m.Authoritative = true
 	m.Answer = answers
 
 	//goland:noinspection ALL
@@ -113,41 +120,50 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	return dns.RcodeSuccess, nil
 }
 
-func (t *Traefik) start() error {
-	log.Info("Starting!")
-	err := t.refresh(true)
-
-	if err != nil {
-		log.Warningf("Failed to load Traefik HTTP routers, will retry: %s", err)
-	}
-
-	uptimeTicker := time.NewTicker(time.Duration(t.Config.refreshInterval) * time.Second)
-
-	for {
-		select {
-		case <-uptimeTicker.C:
-			log.Debug("Refreshing sites")
-			err := t.refresh(false)
-			if err != nil {
-				log.Warningf("Error loading Traefik HTTP routers: %v", err)
-			}
-		}
+func (t *Traefik) start() {
+	for _, inst := range t.Instances {
+		go inst.start()
 	}
 }
 
 func (t *Traefik) getEntry(host string) *TraefikConfigEntry {
-	t.mutex.RLock()
-	defer t.mutex.RUnlock()
+	for _, inst := range t.Instances {
+		if entry := inst.getEntry(host); entry != nil {
+			return entry
+		}
+	}
+	return nil
+}
 
-	if t.Config.resolveApiHost && !t.Config.apiHostnameIsIp && t.Config.apiHostname == host {
+func (i *traefikInstance) start() {
+	src := i.config.baseUrl
+	log.Infof("[%s] Starting!", src)
+	if err := i.refresh(true); err != nil {
+		log.Warningf("[%s] Failed to load Traefik HTTP routers, will retry: %s", src, err)
+	}
+
+	uptimeTicker := time.NewTicker(time.Duration(i.config.refreshInterval) * time.Second)
+	for range uptimeTicker.C {
+		log.Debugf("[%s] Refreshing sites", src)
+		if err := i.refresh(false); err != nil {
+			log.Warningf("[%s] Error loading Traefik HTTP routers: %v", src, err)
+		}
+	}
+}
+
+func (i *traefikInstance) getEntry(host string) *TraefikConfigEntry {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+
+	if i.config.resolveApiHost && !i.config.apiHostnameIsIp && i.config.apiHostname == host {
 		return &TraefikConfigEntry{
-			a:    t.Config.a,
-			aaaa: t.Config.aaaa,
-			ttl:  t.Config.ttl,
+			a:    i.config.a,
+			aaaa: i.config.aaaa,
+			ttl:  i.config.ttl,
 		}
 	}
 
-	value, foundIt := t.mappings[host]
+	value, foundIt := i.mappings[host]
 	if !foundIt {
 		return nil
 	}
@@ -155,48 +171,49 @@ func (t *Traefik) getEntry(host string) *TraefikConfigEntry {
 	return value
 }
 
-func (t *Traefik) refresh(first bool) error {
+func (i *traefikInstance) refresh(first bool) error {
+	src := i.config.baseUrl
 	if first {
-		log.Infof("Checking for Traefik HTTP routers...")
+		log.Infof("[%s] Checking for Traefik HTTP routers...", src)
 	}
-	routers, err := t.TraefikClient.GetHttpRouters()
+	routers, err := i.client.GetHttpRouters()
 	if err != nil {
-		log.Errorf("Error retrieving Traefik HTTP routers: %s", err)
+		log.Errorf("[%s] Error retrieving Traefik HTTP routers: %s", src, err)
 		return err
 	}
 
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
 
 	adds, deletes := 0, 0
 	fromTraefik := map[string]struct{}{}
 	for _, s := range *routers {
 		//goland:noinspection ALL
-		strs := t.Config.hostMatcher.FindAllStringSubmatch(s.Rule, -1)
+		strs := i.config.hostMatcher.FindAllStringSubmatch(s.Rule, -1)
 		for _, s := range strs {
 			if len(s) == 3 {
 				host := strings.ToLower(s[2])
 				fromTraefik[host] = struct{}{}
 
-				if t.Config.cname != nil {
-					_, exists := t.mappings[host]
+				if i.config.cname != nil {
+					_, exists := i.mappings[host]
 					if !exists {
-						log.Infof("+ CNAME %s -> %s", host, *t.Config.cname)
-						t.mappings[host] = &TraefikConfigEntry{
-							cname: t.Config.cname,
-							ttl:   t.Config.ttl,
+						log.Infof("[%s] + CNAME %s -> %s", src, host, *i.config.cname)
+						i.mappings[host] = &TraefikConfigEntry{
+							cname: i.config.cname,
+							ttl:   i.config.ttl,
 						}
 						adds += 1
 					}
 				} else {
-					_, exists := t.mappings[host]
+					_, exists := i.mappings[host]
 
 					if !exists {
-						log.Infof("+ %s -> a=%s aaaa=%s", host, ipsLog(t.Config.a), ipsLog(t.Config.aaaa))
-						t.mappings[host] = &TraefikConfigEntry{
-							a:    t.Config.a,
-							aaaa: t.Config.aaaa,
-							ttl:  t.Config.ttl,
+						log.Infof("[%s] + %s -> a=%s aaaa=%s", src, host, ipsLog(i.config.a), ipsLog(i.config.aaaa))
+						i.mappings[host] = &TraefikConfigEntry{
+							a:    i.config.a,
+							aaaa: i.config.aaaa,
+							ttl:  i.config.ttl,
 						}
 						adds += 1
 					}
@@ -206,13 +223,13 @@ func (t *Traefik) refresh(first bool) error {
 	}
 
 	toDelete := map[string]struct{}{}
-	for cachedHost := range t.mappings {
+	for cachedHost := range i.mappings {
 		_, stillExists := fromTraefik[cachedHost]
 		if !stillExists {
-			if t.Config.cname != nil {
-				log.Infof("- CNAME %s -> %s", cachedHost, *t.Config.cname)
+			if i.config.cname != nil {
+				log.Infof("[%s] - CNAME %s -> %s", src, cachedHost, *i.config.cname)
 			} else {
-				log.Infof("- %s -> a=%s aaaa=%s", cachedHost, ipsLog(t.Config.a), ipsLog(t.Config.aaaa))
+				log.Infof("[%s] - %s -> a=%s aaaa=%s", src, cachedHost, ipsLog(i.config.a), ipsLog(i.config.aaaa))
 			}
 			toDelete[cachedHost] = struct{}{}
 			deletes += 1
@@ -220,24 +237,24 @@ func (t *Traefik) refresh(first bool) error {
 	}
 
 	for del := range toDelete {
-		delete(t.mappings, del)
+		delete(i.mappings, del)
 	}
 
 	if adds > 0 && deletes > 0 {
-		log.Infof("Added %d, deleted %d entries", adds, deletes)
+		log.Infof("[%s] Added %d, deleted %d entries", src, adds, deletes)
 	} else if adds > 0 {
-		log.Infof("Added %d entries", adds)
+		log.Infof("[%s] Added %d entries", src, adds)
 	} else if deletes > 0 {
-		log.Infof("Deleted %d entries", deletes)
+		log.Infof("[%s] Deleted %d entries", src, deletes)
 	} else {
 		if first {
-			log.Warning("Failed to load Traefik HTTP routes... Will try again")
+			log.Warningf("[%s] Failed to load Traefik HTTP routes... Will try again", src)
 		} else {
-			log.Debug("No changes detected")
+			log.Debugf("[%s] No changes detected", src)
 		}
 	}
 
-	t.ready = true
+	i.ready = true
 	return nil
 }
 

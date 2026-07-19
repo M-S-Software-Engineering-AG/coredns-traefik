@@ -99,6 +99,22 @@ example.org:53 {
 }
 ~~~
 
+Poll two Traefik instances from the same server block, each with its own records:
+
+~~~ txt
+example.org:53 {
+    traefik https://traefik-a.example.org/api {
+        cname traefik-a.example.org
+    }
+    traefik https://traefik-b.example.org/api {
+        a 10.0.0.3
+    }
+    forward . 10.0.0.1
+}
+~~~
+
+Each block is polled independently; a query is answered by the first instance that knows the host.
+
 ## Metrics
 
 If monitoring is enabled (via the *prometheus* directive) the following metric is exported:

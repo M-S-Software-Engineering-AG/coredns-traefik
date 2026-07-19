@@ -27,29 +27,25 @@ func init() {
 func createPlugin(c *caddy.Controller) (*Traefik, error) {
 	hostMatcher := regexp.MustCompile(`Host(SNI)?\(` + "`([^`]+)`" + `\)`)
 
-	cfg := &TraefikConfig{
-		cname:              nil,
-		a:                  nil,
-		hostMatcher:        hostMatcher,
-		ttl:                defaultTtl,
-		refreshInterval:    defaultRefreshInterval,
-		insecureSkipVerify: false,
-		resolveApiHost:     false,
-	}
-
-	traefik := &Traefik{
-		Config: cfg,
-	}
-
-	defaultBaseUrl, err := url.Parse(defaultTraefikApiEndpoint)
-	if err != nil {
-		return traefik, err
-	}
-
-	cfg.baseUrl = defaultBaseUrl
+	traefik := &Traefik{}
 
 	for c.Next() {
+		cfg := &TraefikConfig{
+			hostMatcher:     hostMatcher,
+			ttl:             defaultTtl,
+			refreshInterval: defaultRefreshInterval,
+		}
+
+		defaultBaseUrl, err := url.Parse(defaultTraefikApiEndpoint)
+		if err != nil {
+			return traefik, err
+		}
+		cfg.baseUrl = defaultBaseUrl
+
 		args := c.RemainingArgs()
+		if len(args) > 1 {
+			return traefik, c.ArgErr()
+		}
 		if len(args) == 1 {
 			baseUrl, err := url.Parse(args[0])
 			if err != nil {
@@ -66,10 +62,6 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 		cfg.apiHostnameIsIp = apiIp != nil
 		if apiIp != nil {
 			cfg.apiIp = &apiIp
-		}
-
-		if len(args) > 1 {
-			return traefik, c.ArgErr()
 		}
 
 		for c.NextBlock() {
@@ -151,30 +143,33 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 				return traefik, c.Errf("unknown property: '%s'", c.Val())
 			}
 		}
+
+		if cfg.cname == nil && cfg.a == nil && cfg.aaaa == nil {
+			return traefik, c.Errf("traefik config requires a cname, a, or aaaa")
+		}
+
+		client, err := NewTraefikClient(cfg)
+		if err != nil {
+			return nil, err
+		}
+
+		traefik.Instances = append(traefik.Instances, &traefikInstance{
+			config:   cfg,
+			client:   client,
+			mappings: make(TraefikConfigEntryMap),
+		})
+
+		log.Infof("base url ............ %s", cfg.baseUrl)
+		log.Infof("cname ............... %v", cfg.cname)
+		log.Infof("a ................... %v", cfg.a)
+		log.Infof("aaaa ................ %v", cfg.aaaa)
+		log.Infof("ttl ................. %v", cfg.ttl)
+		log.Infof("refreshInterval ..... %v", cfg.refreshInterval)
+		log.Infof("insecureSkipVerify .. %v", cfg.insecureSkipVerify)
+		log.Infof("apiHostname ......... %v", cfg.apiHostname)
+		log.Infof("apiIp ............... %v", cfg.apiIp)
+		log.Infof("resolveApiHost ...... %v", cfg.resolveApiHost)
 	}
-
-	if cfg.cname == nil && cfg.a == nil && cfg.aaaa == nil {
-		return traefik, c.Errf("traefik config requires a cname, a, or aaaa")
-	}
-
-	traefikClient, err := NewTraefikClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	traefik.TraefikClient = traefikClient
-	traefik.mappings = make(TraefikConfigEntryMap)
-
-	log.Infof("base url ............ %s", cfg.baseUrl)
-	log.Infof("cname ............... %v", cfg.cname)
-	log.Infof("a ................... %v", cfg.a)
-	log.Infof("aaaa ................ %v", cfg.aaaa)
-	log.Infof("ttl ................. %v", cfg.ttl)
-	log.Infof("refreshInterval ..... %v", cfg.refreshInterval)
-	log.Infof("insecureSkipVerify .. %v", cfg.insecureSkipVerify)
-	log.Infof("apiHostname ......... %v", cfg.apiHostname)
-	log.Infof("apiIp ............... %v", cfg.apiIp)
-	log.Infof("resolveApiHost ...... %v", cfg.resolveApiHost)
 
 	return traefik, nil
 }
@@ -206,7 +201,7 @@ func convertStringsToIPv6s(ips []string) ([]net.IP, error) {
 func parseBoolWithDefault(str string, defaultValue bool) bool {
 	parsedValue, err := strconv.ParseBool(str)
 	if err != nil {
-		log.Warningf("Failed to parse %s as bool. Defaulting to %s", str, defaultValue)
+		log.Warningf("Failed to parse %s as bool. Defaulting to %v", str, defaultValue)
 		return defaultValue
 	}
 	return parsedValue
@@ -218,7 +213,7 @@ func setup(c *caddy.Controller) error {
 		return err
 	}
 
-	go traefik.start()
+	traefik.start()
 
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
 		traefik.Next = next
