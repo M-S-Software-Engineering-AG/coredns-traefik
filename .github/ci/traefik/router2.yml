@@ -1,0 +1,15 @@
+# Dropped into Traefik's watched dir mid-test to prove the plugin reacts to
+# live Traefik changes: whoami2.example.org must become resolvable without a
+# CoreDNS restart.
+http:
+  routers:
+    whoami2:
+      rule: "Host(`whoami2.example.org`)"
+      service: whoami2
+      entryPoints:
+        - web
+  services:
+    whoami2:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:9999"

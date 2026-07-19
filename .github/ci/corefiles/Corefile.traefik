@@ -1,0 +1,10 @@
+example.org:5354 {
+    traefik http://127.0.0.1:8080/api {
+        a 10.0.0.2
+        refreshinterval 2
+        ttl 5
+    }
+
+    log
+    errors
+}

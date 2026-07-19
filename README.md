@@ -32,8 +32,10 @@ traefik [ENDPOINT] {
     aaaa ADDRESS...
     refreshinterval SECONDS
     ttl SECONDS
+    retention SECONDS
     insecureskipverify [BOOL]
     resolveapihost [BOOL]
+    filter FQDN...
     fallthrough [ZONES...]
 }
 ~~~
@@ -53,12 +55,21 @@ Exactly one of `cname`, `a`, or `aaaa` is required; `cname` is mutually exclusiv
 * `refreshinterval` **SECONDS** how often the Traefik API is polled for changes, an integer number of
   seconds. Default `30`.
 * `ttl` **SECONDS** the TTL of the returned records, an integer number of seconds. Default `30`.
+* `retention` **SECONDS** how long a discovered host keeps being served after it disappears from
+  Traefik (for example when its router or container label is removed), an integer number of seconds.
+  The host is evicted on the first refresh after the window elapses; if it reappears within the
+  window it is kept. Default `0`, which evicts as soon as Traefik stops advertising the host.
 * `insecureskipverify` **[BOOL]** skip TLS certificate verification when the API endpoint uses HTTPS
   with an untrusted certificate. The argument is optional; the bare directive means `true`. Default
   `false`.
 * `resolveapihost` **[BOOL]** when set together with `a`/`aaaa`, also answer queries for the
   **ENDPOINT** host name itself with those addresses. The argument is optional; the bare directive
   means `true`. Default `false`.
+* `filter` **FQDN...** only serve discovered hosts that are equal to, or a subdomain of, one of the
+  given **FQDN**s; other hosts advertised by Traefik are ignored. Defaults to the server block's
+  zone, so out-of-zone hosts are dropped unless you widen or narrow the filter. Each **FQDN** must
+  itself be the server zone or a subdomain of it; when the server block has no zone (`.`) any **FQDN**
+  is accepted.
 * `fallthrough` **[ZONES...]** if a query for a host is not advertised by Traefik, pass it to the next
   plugin instead of returning NXDOMAIN. If **ZONES** is given, only queries in those zones fall
   through. See also the *fallthrough* section of the CoreDNS plugin documentation.

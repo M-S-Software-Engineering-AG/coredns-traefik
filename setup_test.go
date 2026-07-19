@@ -1,9 +1,11 @@
 package traefik
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/coredns/caddy"
+	"github.com/coredns/coredns/core/dnsserver"
 )
 
 // TestSetup tests the various things that should be parsed by setup, including
@@ -50,6 +52,92 @@ func TestSetup(t *testing.T) {
 			}
 			if !tc.shouldErr && len(traefik.Instances) != tc.numInstances {
 				t.Fatalf("Expected %d instances, but got %d", tc.numInstances, len(traefik.Instances))
+			}
+		})
+	}
+}
+
+// TestFilterSetup covers the record filter: it defaults to the server block
+// zone, only accepts FQDNs at or below that zone, and accepts any FQDN when the
+// server zone is root.
+func TestFilterSetup(t *testing.T) {
+	tests := []struct {
+		name       string
+		zone       string
+		input      string
+		shouldErr  bool
+		wantFilter []string
+	}{
+		{
+			name:       "defaults to server zone",
+			zone:       "example.org.",
+			input:      `traefik https://traefik.example.org/api { cname traefik.example.org }`,
+			wantFilter: []string{"example.org."},
+		},
+		{
+			name: "explicit subdomain filters",
+			zone: "example.org.",
+			input: `traefik https://traefik.example.org/api {
+				cname traefik.example.org
+				filter a.example.org b.example.org
+			}`,
+			wantFilter: []string{"a.example.org.", "b.example.org."},
+		},
+		{
+			name: "the zone itself is a valid filter",
+			zone: "example.org.",
+			input: `traefik https://traefik.example.org/api {
+				cname traefik.example.org
+				filter example.org
+			}`,
+			wantFilter: []string{"example.org."},
+		},
+		{
+			name: "filter outside the zone is rejected",
+			zone: "example.org.",
+			input: `traefik https://traefik.example.org/api {
+				cname traefik.example.org
+				filter example.net
+			}`,
+			shouldErr: true,
+		},
+		{
+			name: "any filter allowed when server zone is root",
+			zone: ".",
+			input: `traefik https://traefik.example.org/api {
+				cname traefik.example.org
+				filter example.net
+			}`,
+			wantFilter: []string{"example.net."},
+		},
+		{
+			name: "filter requires an argument",
+			zone: "example.org.",
+			input: `traefik https://traefik.example.org/api {
+				cname traefik.example.org
+				filter
+			}`,
+			shouldErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", tc.input)
+			dnsserver.GetConfig(c).Zone = tc.zone
+			traefik, err := createPlugin(c)
+			if tc.shouldErr {
+				if err == nil {
+					t.Fatalf("Expected error, but got none")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Expected no error, but got: %v", err)
+			}
+			got := traefik.Instances[0].config.filter
+			if !reflect.DeepEqual(got, tc.wantFilter) {
+				t.Fatalf("filter = %v, want %v", got, tc.wantFilter)
 			}
 		})
 	}

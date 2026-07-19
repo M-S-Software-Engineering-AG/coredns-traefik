@@ -6,11 +6,14 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 
 	"github.com/coredns/caddy"
+	"github.com/miekg/dns"
 )
 
 const defaultTraefikApiEndpoint = "https://traefik.example.com/api"
@@ -28,6 +31,10 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 	hostMatcher := regexp.MustCompile(`Host(SNI)?\(` + "`([^`]+)`" + `\)`)
 
 	traefik := &Traefik{}
+
+	// Server block zone (FQDN, lowercase); "." when no domain is set. Filters
+	// default to this and must fall under it.
+	zone := dns.Fqdn(strings.ToLower(dnsserver.GetConfig(c).Zone))
 
 	for c.Next() {
 		cfg := &TraefikConfig{
@@ -125,6 +132,15 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 				if ttl > 0 {
 					cfg.ttl = uint32(ttl)
 				}
+			case "retention":
+				if !c.NextArg() {
+					return traefik, c.ArgErr()
+				}
+				retention, err := strconv.ParseUint(c.Val(), 10, 32)
+				if err != nil {
+					return traefik, err
+				}
+				cfg.retention = uint32(retention)
 			case "insecureskipverify":
 				if c.NextArg() {
 					cfg.insecureSkipVerify = parseBoolWithDefault(c.Val(), false)
@@ -139,6 +155,18 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 				} else {
 					cfg.resolveApiHost = true
 				}
+			case "filter":
+				filters := c.RemainingArgs()
+				if len(filters) == 0 {
+					return traefik, c.ArgErr()
+				}
+				for _, f := range filters {
+					fqdn := dns.Fqdn(strings.ToLower(f))
+					if !dns.IsSubDomain(zone, fqdn) {
+						return traefik, c.Errf("filter %q must be the server zone %q or a subdomain of it", f, zone)
+					}
+					cfg.filter = append(cfg.filter, fqdn)
+				}
 			default:
 				return traefik, c.Errf("unknown property: '%s'", c.Val())
 			}
@@ -146,6 +174,11 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 
 		if cfg.cname == nil && cfg.a == nil && cfg.aaaa == nil {
 			return traefik, c.Errf("traefik config requires a cname, a, or aaaa")
+		}
+
+		// Default the filter to the server block zone.
+		if len(cfg.filter) == 0 {
+			cfg.filter = []string{zone}
 		}
 
 		client, err := NewTraefikClient(cfg)
@@ -157,6 +190,7 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 			config:   cfg,
 			client:   client,
 			mappings: make(TraefikConfigEntryMap),
+			evictAt:  make(map[string]time.Time),
 		})
 
 		log.Infof("base url ............ %s", cfg.baseUrl)
@@ -165,10 +199,12 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 		log.Infof("aaaa ................ %v", cfg.aaaa)
 		log.Infof("ttl ................. %v", cfg.ttl)
 		log.Infof("refreshInterval ..... %v", cfg.refreshInterval)
+		log.Infof("retention ........... %v", cfg.retention)
 		log.Infof("insecureSkipVerify .. %v", cfg.insecureSkipVerify)
 		log.Infof("apiHostname ......... %v", cfg.apiHostname)
 		log.Infof("apiIp ............... %v", cfg.apiIp)
 		log.Infof("resolveApiHost ...... %v", cfg.resolveApiHost)
+		log.Infof("filter .............. %v", cfg.filter)
 	}
 
 	return traefik, nil

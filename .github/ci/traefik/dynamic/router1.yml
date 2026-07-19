@@ -1,0 +1,15 @@
+# Initial Traefik dynamic config: a single router advertising whoami.example.org.
+# Traefik watches this directory; the traefik plugin discovers the Host() rule
+# via the API and serves DNS for it.
+http:
+  routers:
+    whoami:
+      rule: "Host(`whoami.example.org`)"
+      service: whoami
+      entryPoints:
+        - web
+  services:
+    whoami:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:9999"

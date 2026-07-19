@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Single source of truth for the version matrices. Edit the lists here; every
+  # job below consumes them via fromJSON(needs.matrix.outputs.*).
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      coredns: ${{ steps.set.outputs.coredns }}
+      traefik: ${{ steps.set.outputs.traefik }}
+    steps:
+      - id: set
+        run: |
+          echo 'coredns=["v1.14.6"]' >> "$GITHUB_OUTPUT"
+          echo 'traefik=["v3.7.8","v3.6.23","v2.11.52"]' >> "$GITHUB_OUTPUT"
+
+  unit:
+    name: unit (coredns ${{ matrix.coredns }})
+    runs-on: ubuntu-latest
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        coredns: ${{ fromJSON(needs.matrix.outputs.coredns) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-coredns
+        with:
+          coredns-version: ${{ matrix.coredns }}
+      - name: Test
+        run: go test ./plugin/traefik/...
+        working-directory: ${{ runner.temp }}/coredns
+
+  integration:
+    name: integration (coredns ${{ matrix.coredns }}, traefik ${{ matrix.traefik }})
+    runs-on: ubuntu-latest
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        coredns: ${{ fromJSON(needs.matrix.outputs.coredns) }}
+        traefik: ${{ fromJSON(needs.matrix.outputs.traefik) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-coredns
+        with:
+          coredns-version: ${{ matrix.coredns }}
+      - name: Build CoreDNS
+        run: go build -o "$RUNNER_TEMP/coredns-bin" .
+        working-directory: ${{ runner.temp }}/coredns
+      - name: Start Traefik (file provider, API enabled)
+        run: |
+          mkdir -p "$RUNNER_TEMP/traefik-dynamic"
+          cp .github/ci/traefik/dynamic/router1.yml "$RUNNER_TEMP/traefik-dynamic/"
+          docker run -d --name traefik --network host \
+            -v "$RUNNER_TEMP/traefik-dynamic:/dynamic" \
+            "traefik:${{ matrix.traefik }}" \
+            --api.insecure=true --api.dashboard=false \
+            --providers.file.directory=/dynamic --providers.file.watch=true \
+            --entrypoints.web.address=:8000
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8080/api/http/routers >/dev/null && break
+            sleep 1
+          done
+      - name: Discover host and react to a live Traefik change
+        run: |
+          .github/ci/assert-reacts.sh "$RUNNER_TEMP/coredns-bin" \
+            .github/ci/corefiles/Corefile.traefik \
+            whoami.example.org 10.0.0.2 \
+            'cp .github/ci/traefik/router2.yml "$RUNNER_TEMP/traefik-dynamic/"' \
+            whoami2.example.org
+      - name: Traefik logs on failure
+        if: failure()
+        run: docker logs traefik || true

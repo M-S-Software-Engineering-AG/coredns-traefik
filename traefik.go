@@ -39,12 +39,31 @@ type TraefikConfig struct {
 	aaaa               *[]net.IP
 	ttl                uint32
 	refreshInterval    uint32
+	// retention is how many seconds a host keeps being served after it
+	// disappears from Traefik. 0 means evict on the first refresh that no
+	// longer sees it.
+	retention          uint32
 	insecureSkipVerify bool
 	hostMatcher        *regexp.Regexp
 	apiHostname        string
 	apiHostnameIsIp    bool
 	apiIp              *net.IP
 	resolveApiHost     bool
+	// filter is the set of FQDNs (lowercase, trailing dot) a discovered host
+	// must fall under to be served. Defaults to the server block zone.
+	filter []string
+}
+
+// matchesFilter reports whether a discovered host (lowercase, no trailing dot)
+// falls under one of the configured filter FQDNs.
+func (cfg *TraefikConfig) matchesFilter(host string) bool {
+	fqdn := dns.Fqdn(host)
+	for _, f := range cfg.filter {
+		if dns.IsSubDomain(f, fqdn) {
+			return true
+		}
+	}
+	return false
 }
 
 // traefikInstance is one configured `traefik` block: a Traefik API to poll and
@@ -52,10 +71,13 @@ type TraefikConfig struct {
 // own poller and keeps its own mappings.
 type traefikInstance struct {
 	config   *TraefikConfig
-	client   *TraefikClient
+	client   ITraefikClient
 	mappings TraefikConfigEntryMap
-	ready    bool
-	mutex    sync.RWMutex
+	// evictAt holds the deadline for hosts that vanished from Traefik but are
+	// still served during their retention window. Empty when retention is 0.
+	evictAt map[string]time.Time
+	ready   bool
+	mutex   sync.RWMutex
 }
 
 type Traefik struct {
@@ -193,6 +215,9 @@ func (i *traefikInstance) refresh(first bool) error {
 		for _, s := range strs {
 			if len(s) == 3 {
 				host := strings.ToLower(s[2])
+				if !i.config.matchesFilter(host) {
+					continue
+				}
 				fromTraefik[host] = struct{}{}
 
 				if i.config.cname != nil {
@@ -222,18 +247,33 @@ func (i *traefikInstance) refresh(first bool) error {
 		}
 	}
 
+	now := time.Now()
 	toDelete := map[string]struct{}{}
 	for cachedHost := range i.mappings {
-		_, stillExists := fromTraefik[cachedHost]
-		if !stillExists {
-			if i.config.cname != nil {
-				log.Infof("[%s] - CNAME %s -> %s", src, cachedHost, *i.config.cname)
-			} else {
-				log.Infof("[%s] - %s -> a=%s aaaa=%s", src, cachedHost, ipsLog(i.config.a), ipsLog(i.config.aaaa))
-			}
-			toDelete[cachedHost] = struct{}{}
-			deletes += 1
+		if _, stillExists := fromTraefik[cachedHost]; stillExists {
+			delete(i.evictAt, cachedHost) // back (or never gone) — cancel any pending eviction
+			continue
 		}
+		// Host is gone from Traefik. Keep serving it until its retention window
+		// elapses; retention 0 evicts immediately.
+		if i.config.retention > 0 {
+			deadline, pending := i.evictAt[cachedHost]
+			if !pending {
+				i.evictAt[cachedHost] = now.Add(time.Duration(i.config.retention) * time.Second)
+				continue
+			}
+			if now.Before(deadline) {
+				continue
+			}
+		}
+		if i.config.cname != nil {
+			log.Infof("[%s] - CNAME %s -> %s", src, cachedHost, *i.config.cname)
+		} else {
+			log.Infof("[%s] - %s -> a=%s aaaa=%s", src, cachedHost, ipsLog(i.config.a), ipsLog(i.config.aaaa))
+		}
+		delete(i.evictAt, cachedHost)
+		toDelete[cachedHost] = struct{}{}
+		deletes += 1
 	}
 
 	for del := range toDelete {
