@@ -1,0 +1,24 @@
+services:
+  traefik:
+    image: traefik:3.7.8
+    command:
+      # Expose the API/dashboard unauthenticated on :8080 so the plugin can poll
+      # /api/http/routers without credentials. Development only.
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "8080:8080" # Traefik API/dashboard -> http://localhost:8080/api
+      - "80:80"     # web entrypoint
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # A dummy service labelled with a Host() router rule. The plugin discovers
+  # whoami.example.org from Traefik's /api/http/routers and answers for it.
+  whoami:
+    image: traefik/whoami
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`whoami.example.org`)"
+      - "traefik.http.routers.whoami.entrypoints=web"

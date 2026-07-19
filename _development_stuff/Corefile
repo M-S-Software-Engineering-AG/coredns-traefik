@@ -1,0 +1,14 @@
+example.org:5354 {
+    # Poll the local Traefik API from docker-compose.yml. Returns A 127.0.0.1
+    # for every host discovered in Traefik's routers (e.g. whoami.example.org),
+    # and for the API host itself via resolveapihost.
+    traefik http://localhost:8080/api {
+        a 127.0.0.1
+        resolveapihost
+        refreshinterval 10
+        ttl 30
+    }
+
+    log
+    errors
+}
