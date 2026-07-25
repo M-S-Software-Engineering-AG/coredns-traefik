@@ -121,17 +121,25 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	m.SetReply(r)
 	m.Authoritative = true
 
+	// Only on NXDOMAIN do we fall through, mirroring plugin/hosts. A host we
+	// discovered from Traefik exists; we simply hold no record of this qtype
+	// for it, which is NODATA. Falling through would let a later plugin (a
+	// catch-all template, an authoritative zone) answer NXDOMAIN for a name
+	// that demonstrably exists -- a protocol violation, and one that breaks
+	// real clients: musl's getaddrinfo abandons the lookup entirely if either
+	// the A or the AAAA probe returns NXDOMAIN, so an IPv4-only host stops
+	// resolving on musl-based systems the moment its AAAA is answered that way.
 	if len(answers) == 0 {
-		if t.Fall.Through(qname) && t.Next != nil {
-			log.Debug("Falling through. 0 answers")
-			return plugin.NextOrFailure(t.Name(), t.Next, ctx, w, r)
-		}
+		if !found {
+			if t.Fall.Through(qname) && t.Next != nil {
+				log.Debug("Falling through. 0 answers")
+				return plugin.NextOrFailure(t.Name(), t.Next, ctx, w, r)
+			}
 
-		if found {
-			log.Debug("Returning NODATA")
-		} else {
 			log.Debug("Returning NXDOMAIN")
 			m.Rcode = dns.RcodeNameError
+		} else {
+			log.Debug("Returning NODATA")
 		}
 	}
 
