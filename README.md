@@ -15,6 +15,41 @@ periodically, so containers exposed through Traefik become resolvable without an
 Queries for hosts that are not currently advertised by a Traefik router are answered with NXDOMAIN,
 or passed to the next plugin when `fallthrough` is set.
 
+Most of this can also be achieved with the *template* plugin, which ships with CoreDNS and needs no
+custom build — a wildcard `match` under the zone answering a `CNAME` to the Traefik instance:
+
+~~~ txt
+template IN ANY dyn.example.com {
+    match "^.+\.dyn\.example\.com\.$"
+    answer "{{ .Name }} 60 IN CNAME dyn.example.com."
+    fallthrough
+}
+~~~
+
+Be aware that a wildcard like this matches *every* name under the zone, including the ones served by
+*file* — *template* runs first and shadows those records. Names not advertised by Traefik also
+resolve, so a missing service returns a Traefik 404 instead of NXDOMAIN.
+
+Extending the `match` keeps *file* reachable: scope the wildcard to a dedicated label so everything
+else falls through to the zone file.
+
+~~~ txt
+dyn.example.com {
+    template IN ANY dyn.example.com {
+        match "^.+\.apps\.dyn\.example\.com\.$"
+        answer "{{ .Name }} 60 IN CNAME dyn.example.com."
+        fallthrough
+    }
+
+    file /etc/coredns/dyn.example.com.db
+}
+~~~
+
+`whoami.apps.dyn.example.com` is answered by the template, while `nas.dyn.example.com` misses the
+regex and is served from the zone file. Note that Go's regexp engine has no negative lookahead, so
+excluding individual static names from a broad wildcard is not practical — separate the dynamic names
+by label instead.
+
 ## Motivation
 
 Traefik already configures routes, services, and TLS from container labels, but the matching DNS
@@ -150,7 +185,7 @@ through, so if any of them runs before *traefik* the query for a discovered host
 ahead of the whole cluster:
 
 ~~~ txt
-traefik:github.com/scottt732/coredns-traefik
+traefik:github.com/BaseCrusher/coredns-traefik
 ~~~
 
 Then rebuild with `go generate && go build`, or `make`.
