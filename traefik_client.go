@@ -7,7 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
+
+const apiTimeout = 10 * time.Second
 
 type ITraefikClient interface {
 	GetHttpRouters() (*[]HttpRouter, error)
@@ -35,9 +38,9 @@ func NewTraefikClient(cfg *TraefikConfig) (*TraefikClient, error) {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
-		client.client = &http.Client{Transport: tr}
+		client.client = &http.Client{Transport: tr, Timeout: apiTimeout}
 	} else {
-		client.client = &http.Client{}
+		client.client = &http.Client{Timeout: apiTimeout}
 	}
 
 	return client, nil
