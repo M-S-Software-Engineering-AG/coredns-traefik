@@ -122,14 +122,13 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	m.Authoritative = true
 
 	if len(answers) == 0 {
-		if t.Fall.Through(qname) && t.Next != nil {
+		switch {
+		case found:
+			log.Debug("Returning NODATA")
+		case t.Fall.Through(qname) && t.Next != nil:
 			log.Debug("Falling through. 0 answers")
 			return plugin.NextOrFailure(t.Name(), t.Next, ctx, w, r)
-		}
-
-		if found {
-			log.Debug("Returning NODATA")
-		} else {
+		default:
 			log.Debug("Returning NXDOMAIN")
 			m.Rcode = dns.RcodeNameError
 		}

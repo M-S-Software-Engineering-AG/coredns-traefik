@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coredns/coredns/plugin/pkg/dnstest"
+	"github.com/coredns/coredns/plugin/pkg/fall"
 	"github.com/coredns/coredns/plugin/test"
 
 	"github.com/miekg/dns"
@@ -151,5 +152,75 @@ func TestServeDNSMultipleInstances(t *testing.T) {
 		if len(rec.Msg.Answer) != tc.answer {
 			t.Errorf("%s: expected %d answers, got %d", tc.qname, tc.answer, len(rec.Msg.Answer))
 		}
+	}
+}
+
+type nxdomainHandler struct{ called bool }
+
+func (h *nxdomainHandler) Name() string { return "nxdomain" }
+
+func (h *nxdomainHandler) ServeDNS(_ context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	h.called = true
+	m := new(dns.Msg)
+	m.SetReply(r)
+	m.Authoritative = true
+	m.Rcode = dns.RcodeNameError
+	w.WriteMsg(m)
+	return dns.RcodeSuccess, nil
+}
+
+func TestServeDNSKnownHostNoDataWithFallthrough(t *testing.T) {
+	ips := []net.IP{net.ParseIP("10.0.0.2")}
+	inst := &traefikInstance{
+		config: &TraefikConfig{ttl: 30},
+		mappings: TraefikConfigEntryMap{
+			"known.example.org": &TraefikConfigEntry{a: &ips, ttl: 30},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		qname      string
+		qtype      uint16
+		rcode      int
+		answers    int
+		nextCalled bool
+	}{
+		{"known host, A is answered", "known.example.org.", dns.TypeA, dns.RcodeSuccess, 1, false},
+		{"known host, AAAA is NODATA not NXDOMAIN", "known.example.org.", dns.TypeAAAA, dns.RcodeSuccess, 0, false},
+		{"known host, other qtype is NODATA", "known.example.org.", dns.TypeTXT, dns.RcodeSuccess, 0, false},
+		{"unknown host still falls through", "other.example.org.", dns.TypeA, dns.RcodeNameError, 0, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			next := &nxdomainHandler{}
+			tk := &Traefik{
+				Next:      next,
+				Instances: []*traefikInstance{inst},
+				Fall:      fall.Root,
+			}
+
+			r := new(dns.Msg)
+			r.SetQuestion(tc.qname, tc.qtype)
+			rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+			if _, err := tk.ServeDNS(context.TODO(), rec, r); err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if rec.Msg.Rcode != tc.rcode {
+				t.Errorf("expected rcode %s, got %s",
+					dns.RcodeToString[tc.rcode], dns.RcodeToString[rec.Msg.Rcode])
+			}
+			if len(rec.Msg.Answer) != tc.answers {
+				t.Errorf("expected %d answers, got %d", tc.answers, len(rec.Msg.Answer))
+			}
+			if next.called != tc.nextCalled {
+				t.Errorf("expected next-plugin called=%v, got %v", tc.nextCalled, next.called)
+			}
+			if !tc.nextCalled && !rec.Msg.Authoritative {
+				t.Error("expected an authoritative answer from the plugin itself")
+			}
+		})
 	}
 }
