@@ -155,8 +155,6 @@ func TestServeDNSMultipleInstances(t *testing.T) {
 	}
 }
 
-// nxdomainHandler stands in for a catch-all plugin placed after traefik in the
-// chain (an authoritative `template`, a zone file). It records whether it ran.
 type nxdomainHandler struct{ called bool }
 
 func (h *nxdomainHandler) Name() string { return "nxdomain" }
@@ -171,12 +169,6 @@ func (h *nxdomainHandler) ServeDNS(_ context.Context, w dns.ResponseWriter, r *d
 	return dns.RcodeSuccess, nil
 }
 
-// TestServeDNSKnownHostNoDataWithFallthrough proves that a host discovered from
-// Traefik never falls through for a qtype we hold no record of, even when
-// `fallthrough` is configured. Falling through hands the query to a catch-all
-// that answers NXDOMAIN for a name that exists; musl's getaddrinfo then treats
-// the whole lookup as "no such host" and the IPv4-only service stops resolving
-// on musl-based clients. Only genuinely unknown names may fall through.
 func TestServeDNSKnownHostNoDataWithFallthrough(t *testing.T) {
 	ips := []net.IP{net.ParseIP("10.0.0.2")}
 	inst := &traefikInstance{
