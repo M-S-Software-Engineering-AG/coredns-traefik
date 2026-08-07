@@ -15,49 +15,6 @@ periodically, so containers exposed through Traefik become resolvable without an
 Queries for hosts that are not currently advertised by a Traefik router are answered with NXDOMAIN,
 or passed to the next plugin when `fallthrough` is set.
 
-Most of this can also be achieved with the *template* plugin, which ships with CoreDNS and needs no
-custom build — a wildcard `match` under the zone answering a `CNAME` to the Traefik instance:
-
-~~~ txt
-template IN ANY dyn.example.com {
-    match "^.+\.dyn\.example\.com\.$"
-    answer "{{ .Name }} 60 IN CNAME dyn.example.com."
-    fallthrough
-}
-~~~
-
-Be aware that a wildcard like this matches *every* name under the zone, including the ones served by
-*file* — *template* runs first and shadows those records. Names not advertised by Traefik also
-resolve, so a missing service returns a Traefik 404 instead of NXDOMAIN.
-
-Extending the `match` keeps *file* reachable: scope the wildcard to a dedicated label so everything
-else falls through to the zone file.
-
-~~~ txt
-dyn.example.com {
-    template IN ANY dyn.example.com {
-        match "^.+\.apps\.dyn\.example\.com\.$"
-        answer "{{ .Name }} 60 IN CNAME dyn.example.com."
-        fallthrough
-    }
-
-    file /etc/coredns/dyn.example.com.db
-}
-~~~
-
-`whoami.apps.dyn.example.com` is answered by the template, while `nas.dyn.example.com` misses the
-regex and is served from the zone file. Note that Go's regexp engine has no negative lookahead, so
-excluding individual static names from a broad wildcard is not practical — separate the dynamic names
-by label instead.
-
-## Motivation
-
-Traefik already configures routes, services, and TLS from container labels, but the matching DNS
-records still have to be created by hand: a single address for Traefik and a CNAME to it per service.
-*traefik* removes that last manual step by polling the Traefik API and answering for the discovered
-host names on the fly. Paired with Traefik's label-based configuration, this automates DNS, TLS, and
-reverse proxying together when new containers are spun up.
-
 ## Syntax
 
 ~~~ txt
@@ -78,15 +35,13 @@ traefik [ENDPOINT] {
 * **ENDPOINT** the base URL of the Traefik API, without a trailing slash, for example
   `https://traefik.example.org/api`. The `/api/http/routers` endpoint is derived from it. Defaults to
   `https://traefik.example.com/api`.
-
-Exactly one of `cname`, `a`, or `aaaa` is required; `cname` is mutually exclusive with `a`/`aaaa`.
-
 * `cname` **CNAME** the fully qualified name (with or without a trailing `.`) returned as a `CNAME`
-  for every discovered host, usually the host name of **ENDPOINT**.
+  for every discovered host, usually the host name of **ENDPOINT**. Mutually exclusive with `a` and
+  `aaaa`.
 * `a` **ADDRESS...** one or more IPv4 addresses of the Traefik instance, returned as `A` records for
-  every discovered host.
+  every discovered host. Mutually exclusive with `cname`.
 * `aaaa` **ADDRESS...** one or more IPv6 addresses of the Traefik instance, returned as `AAAA`
-  records for every discovered host.
+  records for every discovered host. Mutually exclusive with `cname`.
 * `refreshinterval` **SECONDS** how often the Traefik API is polled for changes, an integer number of
   seconds. Default `30`.
 * `ttl` **SECONDS** the TTL of the returned records, an integer number of seconds. Default `30`.
@@ -108,6 +63,8 @@ Exactly one of `cname`, `a`, or `aaaa` is required; `cname` is mutually exclusiv
 * `fallthrough` **[ZONES...]** if a query for a host is not advertised by Traefik, pass it to the next
   plugin instead of returning NXDOMAIN. If **ZONES** is given, only queries in those zones fall
   through. See also the *fallthrough* section of the CoreDNS plugin documentation.
+
+Exactly one record type must be configured: either `cname`, or one or both of `a` and `aaaa`.
 
 ## Examples
 
@@ -161,19 +118,6 @@ example.org:53 {
 
 Each block is polled independently; a query is answered by the first instance that knows the host.
 
-## Metrics
-
-If monitoring is enabled (via the *prometheus* directive) the following metric is exported:
-
-* `coredns_traefik_request_count_total{server}` - query count to the *traefik* plugin.
-
-The `server` label indicates which server handled the request, see the *metrics* plugin for details.
-
-## Ready
-
-This plugin reports readiness to the *ready* plugin. It becomes ready after the first successful
-refresh of data from the Traefik API.
-
 ## Building
 
 This plugin must be compiled into CoreDNS. Add it to
@@ -193,9 +137,66 @@ Then rebuild with `go generate && go build`, or `make`.
 A plugin ordered *before* *traefik* (such as `hosts`) will handle matching queries first; give it
 `fallthrough` so unmatched names reach *traefik* (see the *hosts* example above).
 
+## Metrics
+
+If monitoring is enabled (via the *prometheus* directive) the following metric is exported:
+
+* `coredns_traefik_request_count_total{server}` - query count to the *traefik* plugin.
+
+The `server` label indicates which server handled the request, see the *metrics* plugin for details.
+
+## Ready
+
+This plugin reports readiness to the *ready* plugin. It becomes ready after the first successful
+refresh of data from the Traefik API.
+
+## Compared to the *template* plugin
+
+Traefik already configures routes, services, and TLS from container labels, but the matching DNS
+records still have to be created by hand: a single address for Traefik and a CNAME to it per service.
+*traefik* removes that last manual step by polling the Traefik API and answering for the discovered
+host names on the fly.
+
+Most of this can also be achieved with the *template* plugin, which ships with CoreDNS and needs no
+custom build — a wildcard `match` under the zone answering a `CNAME` to the Traefik instance:
+
+~~~ txt
+template IN ANY dyn.example.org {
+    match "^.+\.dyn\.example\.org\.$"
+    answer "{{ .Name }} 60 IN CNAME dyn.example.org."
+    fallthrough
+}
+~~~
+
+Be aware that a wildcard like this matches *every* name under the zone, including the ones served by
+*file* — *template* runs first and shadows those records. Names not advertised by Traefik also
+resolve, so a missing service returns a Traefik 404 instead of NXDOMAIN.
+
+Extending the `match` keeps *file* reachable: scope the wildcard to a dedicated label so everything
+else falls through to the zone file.
+
+~~~ txt
+dyn.example.org {
+    template IN ANY dyn.example.org {
+        match "^.+\.apps\.dyn\.example\.org\.$"
+        answer "{{ .Name }} 60 IN CNAME dyn.example.org."
+        fallthrough
+    }
+
+    file /etc/coredns/dyn.example.org.db
+}
+~~~
+
+`whoami.apps.dyn.example.org` is answered by the template, while `nas.dyn.example.org` misses the
+regex and is served from the zone file. Note that Go's regexp engine has no negative lookahead, so
+excluding individual static names from a broad wildcard is not practical — separate the dynamic names
+by label instead.
+
+*traefik* answers only the host names Traefik currently advertises, so unknown names still return
+NXDOMAIN and records served by other plugins are not shadowed. Use *template* if a static wildcard is
+enough for your setup.
+
 ## Also See
 
 See the [manual](https://coredns.io/manual) and the
 [Traefik API documentation](https://doc.traefik.io/traefik/operations/api/).
-</content>
-</invoke>
