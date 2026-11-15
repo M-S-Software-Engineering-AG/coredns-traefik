@@ -7,10 +7,15 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
-const apiTimeout = 10 * time.Second
+const (
+	apiTimeout = 10 * time.Second
+	pageSize   = 100
+	maxPages   = 100
+)
 
 type ITraefikClient interface {
 	GetHttpRouters() (*[]HttpRouter, error)
@@ -47,12 +52,57 @@ func NewTraefikClient(cfg *TraefikConfig) (*TraefikClient, error) {
 }
 
 func (c *TraefikClient) GetHttpRouters() (*[]HttpRouter, error) {
-	log.Debugf("Connecting to %s", c.httpRoutersUrl)
-	response, err := c.client.Get(c.httpRoutersUrl)
+	result := []HttpRouter{}
+	err := fetchPages(c.client, c.httpRoutersUrl, func(body []byte) error {
+		page := []HttpRouter{}
+		if err := json.Unmarshal(body, &page); err != nil {
+			return err
+		}
+		result = append(result, page...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Traefik serves at most per_page items per request and names the next page in
+// X-Next-Page, which is 1 (or absent) on the last page.
+func fetchPages(client *http.Client, routersUrl string, onPage func(body []byte) error) error {
+	for page := 1; page <= maxPages; {
+		body, next, err := fetchPage(client, fmt.Sprintf("%s?page=%d&per_page=%d", routersUrl, page, pageSize))
+		if err != nil {
+			return err
+		}
+
+		if body != nil {
+			if err := onPage(body); err != nil {
+				return fmt.Errorf("Failed to parse json body: %q", err)
+			}
+		}
+
+		if next == "" || next == "1" {
+			return nil
+		}
+
+		nextPage, err := strconv.Atoi(next)
+		if err != nil || nextPage <= page {
+			return fmt.Errorf("Invalid X-Next-Page %q after page %d", next, page)
+		}
+		page = nextPage
+	}
+
+	return fmt.Errorf("More than %d pages of routers at %s", maxPages, routersUrl)
+}
+
+func fetchPage(client *http.Client, pageUrl string) ([]byte, string, error) {
+	log.Debugf("Connecting to %s", pageUrl)
+	response, err := client.Get(pageUrl)
 
 	if err != nil {
-		log.Errorf("Failed to fetch http routers: %q", err)
-		return nil, err
+		log.Errorf("Failed to fetch routers: %q", err)
+		return nil, "", err
 	}
 
 	var body []byte
@@ -64,26 +114,17 @@ func (c *TraefikClient) GetHttpRouters() (*[]HttpRouter, error) {
 
 	if readErr != nil {
 		log.Errorf("Failed to read response body: %q", readErr)
-		return nil, readErr
+		return nil, "", readErr
 	}
 
 	if response.StatusCode != 200 {
 		if body != nil {
 			bodyStr := string(body[:])
-			return nil, fmt.Errorf("Received %d response from API: %s", response.StatusCode, bodyStr)
+			return nil, "", fmt.Errorf("Received %d response from API: %s", response.StatusCode, bodyStr)
 		} else {
-			return nil, fmt.Errorf("Received %d response from API", response.StatusCode)
+			return nil, "", fmt.Errorf("Received %d response from API", response.StatusCode)
 		}
 	}
 
-	result := []HttpRouter{}
-
-	if body != nil {
-		err = json.Unmarshal(body, &result)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to parse json body: %q", err)
-		}
-	}
-
-	return &result, nil
+	return body, response.Header.Get("X-Next-Page"), nil
 }
