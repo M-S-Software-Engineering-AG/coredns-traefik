@@ -30,7 +30,7 @@ func TestRetention(t *testing.T) {
 	inst := &traefikInstance{
 		config: &TraefikConfig{
 			baseUrl:     baseURL,
-			hostMatcher: regexp.MustCompile(`Host(SNI)?\(` + "`([^`]+)`" + `\)`),
+			hostMatcher: regexp.MustCompile(`Host(SNI)?\(["'` + "`" + `]([^"'` + "`" + `]+)["'` + "`" + `]\)`),
 			a:           &ips,
 			ttl:         30,
 			retention:   300,
@@ -222,5 +222,37 @@ func TestServeDNSKnownHostNoDataWithFallthrough(t *testing.T) {
 				t.Error("expected an authoritative answer from the plugin itself")
 			}
 		})
+	}
+}
+
+func TestQuotedHostRules(t *testing.T) {
+	baseURL, _ := url.Parse("http://traefik.example.org/api")
+	ips := []net.IP{net.ParseIP("10.0.0.2")}
+	fc := &fakeClient{}
+	inst := &traefikInstance{
+		config: &TraefikConfig{
+			baseUrl:     baseURL,
+			hostMatcher: regexp.MustCompile(`Host(SNI)?\(["'` + "`" + `]([^"'` + "`" + `]+)["'` + "`" + `]\)`),
+			a:           &ips,
+			ttl:         30,
+			filter:      []string{"example.org."},
+		},
+		client:   fc,
+		mappings: make(TraefikConfigEntryMap),
+		evictAt:  make(map[string]time.Time),
+	}
+
+	fc.routers = []HttpRouter{
+		{Rule: "Host(`tick.example.org`)"},
+		{Rule: `Host("dquote.example.org") && PathPrefix("/")`},
+		{Rule: "Host('squote.example.org')"},
+		{Rule: `HostSNI("sni.example.org")`},
+	}
+	inst.refresh(false)
+
+	for _, host := range []string{"tick.example.org", "dquote.example.org", "squote.example.org", "sni.example.org"} {
+		if inst.getEntry(host) == nil {
+			t.Fatalf("host %s should be served", host)
+		}
 	}
 }
