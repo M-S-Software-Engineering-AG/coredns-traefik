@@ -10,8 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  # Single source of truth for the version matrices. Edit the lists here; every
-  # job below consumes them via fromJSON(needs.matrix.outputs.*).
+  # Single source of truth for the version matrices. Edit the versions here; every
+  # job below consumes them via fromJSON(needs.matrix.outputs.*). One version per
+  # line so Renovate can bump each (older Traefik lines stay on their minor, see renovate.json).
   matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -20,8 +21,16 @@ jobs:
     steps:
       - id: set
         run: |
-          echo 'coredns=["v1.14.6"]' >> "$GITHUB_OUTPUT"
-          echo 'traefik=["v3.7.8","v3.6.23","v2.11.52"]' >> "$GITHUB_OUTPUT"
+          # renovate: datasource=github-tags depName=coredns/coredns
+          coredns=v1.14.7
+          # renovate: datasource=docker depName=traefik
+          traefik_latest=v3.7.8
+          # renovate: datasource=docker depName=traefik
+          traefik_prev=v3.6.23
+          # renovate: datasource=docker depName=traefik
+          traefik_v2=v2.11.52
+          echo "coredns=[\"$coredns\"]" >> "$GITHUB_OUTPUT"
+          echo "traefik=[\"$traefik_latest\",\"$traefik_prev\",\"$traefik_v2\"]" >> "$GITHUB_OUTPUT"
 
   unit:
     name: unit (coredns ${{ matrix.coredns }})
@@ -81,3 +90,32 @@ jobs:
       - name: Traefik logs on failure
         if: failure()
         run: docker logs traefik || true
+
+  integration-reload:
+    name: integration test reload (coredns ${{ matrix.coredns }})
+    runs-on: ubuntu-latest
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        coredns: ${{ fromJSON(needs.matrix.outputs.coredns) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-coredns
+        with:
+          coredns-version: ${{ matrix.coredns }}
+      - name: Build CoreDNS
+        run: go build -o "$RUNNER_TEMP/coredns-bin" .
+        working-directory: ${{ runner.temp }}/coredns
+      - name: Reload stops the old Traefik pollers
+        run: .github/ci/assert-reload.sh "$RUNNER_TEMP/coredns-bin" .github/ci/corefiles/Corefile.reload
+
+  # The only required check in the ruleset. Add new jobs to `needs`; jobs skipped via `if:` don't fail it.
+  ci-ok:
+    if: always()
+    needs: [matrix, unit, integration, integration-reload]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a required job failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

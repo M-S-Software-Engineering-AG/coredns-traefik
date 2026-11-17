@@ -141,10 +141,13 @@ func (t *Traefik) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	return dns.RcodeSuccess, nil
 }
 
-func (t *Traefik) start() {
+// start launches one poller per instance and returns a func that stops them all.
+func (t *Traefik) start() (stop func()) {
+	done := make(chan struct{})
 	for _, inst := range t.Instances {
-		go inst.start()
+		go inst.start(done)
 	}
+	return func() { close(done) }
 }
 
 func (t *Traefik) getEntry(host string) *TraefikConfigEntry {
@@ -156,7 +159,7 @@ func (t *Traefik) getEntry(host string) *TraefikConfigEntry {
 	return nil
 }
 
-func (i *traefikInstance) start() {
+func (i *traefikInstance) start(done <-chan struct{}) {
 	src := i.config.baseUrl
 	log.Infof("[%s] Starting!", src)
 	if err := i.refresh(true); err != nil {
@@ -164,10 +167,17 @@ func (i *traefikInstance) start() {
 	}
 
 	uptimeTicker := time.NewTicker(time.Duration(i.config.refreshInterval) * time.Second)
-	for range uptimeTicker.C {
-		log.Debugf("[%s] Refreshing sites", src)
-		if err := i.refresh(false); err != nil {
-			log.Warningf("[%s] Error loading Traefik HTTP routers: %v", src, err)
+	defer uptimeTicker.Stop()
+	for {
+		select {
+		case <-done:
+			log.Infof("[%s] Stopped", src)
+			return
+		case <-uptimeTicker.C:
+			log.Debugf("[%s] Refreshing sites", src)
+			if err := i.refresh(false); err != nil {
+				log.Warningf("[%s] Error loading Traefik HTTP routers: %v", src, err)
+			}
 		}
 	}
 }
