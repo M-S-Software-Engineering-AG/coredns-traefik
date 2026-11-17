@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
 
 permissions:
   contents: read
@@ -45,6 +45,9 @@ jobs:
       - uses: ./.github/actions/setup-coredns
         with:
           coredns-version: ${{ matrix.coredns }}
+      - name: Vet
+        run: go vet ./plugin/traefik/...
+        working-directory: ${{ runner.temp }}/coredns
       - name: Test
         run: go test ./plugin/traefik/...
         working-directory: ${{ runner.temp }}/coredns

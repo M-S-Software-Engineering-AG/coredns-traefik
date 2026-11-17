@@ -1,11 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "baseBranchPatterns": ["$default", "/^release\\/.+/"],
   "dependencyDashboard": false,
   "automerge": true,
   "platformAutomerge": false,
   "rebaseWhen": "behind-base-branch",
   "prHourlyLimit": 0,
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "automerge": true,
+    "labels": ["security"]
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -52,6 +59,11 @@
         "fileFilters": ["**/*.go"],
         "executionMode": "update"
       }
+    },
+    {
+      "description": "LTS branches only receive security fixes",
+      "matchBaseBranches": ["/^release\\/.+/"],
+      "enabled": false
     }
   ]
 }

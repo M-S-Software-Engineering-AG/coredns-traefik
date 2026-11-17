@@ -22,14 +22,9 @@ if ! grep -q '^traefik:' "$COREDNS_DIR/plugin.cfg"; then
 fi
 
 # Pin the modules listed in deps.ini (CoreDNS's go.mod doesn't require them, so `go mod tidy`
-# would otherwise pull whatever is latest). The /vN suffix comes from the version's major.
+# would otherwise pull whatever is latest).
 pins=()
-while IFS='= ' read -r mod ver; do
-  [[ -z "$mod" || "$mod" == [\;\#\[]* ]] && continue
-  major="${ver%%.*}"; major="${major#v}"
-  (( major >= 2 )) && mod="$mod/v$major"
-  pins+=("$mod@$ver")
-done < "$PLUGIN_DIR/deps.ini"
+while read -r pin; do pins+=("$pin"); done < <("$PLUGIN_DIR/.github/ci/deps.sh")
 
 cd "$COREDNS_DIR"
 (( ${#pins[@]} == 0 )) || go get "${pins[@]}"
