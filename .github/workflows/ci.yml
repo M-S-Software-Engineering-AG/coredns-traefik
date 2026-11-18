@@ -22,7 +22,7 @@ jobs:
       - id: set
         run: |
           # renovate: datasource=github-tags depName=coredns/coredns
-          coredns=v1.14.7
+          coredns=v1.15.0
           # renovate: datasource=docker depName=traefik
           traefik_latest=v3.7.19
           # renovate: datasource=docker depName=traefik
