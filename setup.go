@@ -28,7 +28,7 @@ func init() {
 }
 
 func createPlugin(c *caddy.Controller) (*Traefik, error) {
-	hostMatcher := regexp.MustCompile(`Host(SNI)?\(` + "`([^`]+)`" + `\)`)
+	hostMatcher := regexp.MustCompile(`Host(SNI)?\(["'` + "`" + `]([^"'` + "`" + `]+)["'` + "`" + `]\)`)
 
 	traefik := &Traefik{}
 
@@ -249,7 +249,9 @@ func setup(c *caddy.Controller) error {
 		return err
 	}
 
-	traefik.start()
+	// Stop the pollers on shutdown, or every reload leaks another set of them.
+	stop := traefik.start()
+	c.OnShutdown(func() error { stop(); return nil })
 
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
 		traefik.Next = next

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "baseBranchPatterns": ["$default", "/^release\\/.+/"],
+  "dependencyDashboard": false,
+  "automerge": true,
+  "platformAutomerge": false,
+  "rebaseWhen": "behind-base-branch",
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "automerge": true,
+    "labels": ["security"]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Go modules in deps.ini, each under a `; renovate: datasource=… packageName=…` comment",
+      "managerFilePatterns": ["/^deps\\.ini$/"],
+      "matchStrings": [
+        ";\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+packageName=(?<packageName>\\S+)(?:[ \\t]+extractVersion=(?<extractVersion>\\S+))?[ \\t]*\\n(?<depName>[^\\s=]+)[ \\t]*=[ \\t]*(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "CI versions pinned on the line below a `# renovate: datasource=… depName=…` comment",
+      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n[^\\n]*?[=:\"](?<currentValue>v?\\d[^\\s\"']*)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "CoreDNS still has 2016 tags v001…v011; strict semver ignores them (the default coerces v011 to 11.0.0)",
+      "matchPackageNames": ["coredns/coredns"],
+      "versioning": "semver"
+    },
+    {
+      "description": "Older Traefik lines in the CI matrix get patches only; the newest line (traefik_latest) follows new minors. Rotate these when a new minor ships.",
+      "matchPackageNames": ["traefik"],
+      "matchCurrentValue": "/^v3\\.6\\./",
+      "allowedVersions": "/^v3\\.6\\./"
+    },
+    {
+      "matchPackageNames": ["traefik"],
+      "matchCurrentValue": "/^v2\\./",
+      "allowedVersions": "/^v2\\./"
+    },
+    {
+      "description": "Major Go module bump: move the plugin's import paths to the new /vN (the build check in setup-coredns.sh fails if they don't match)",
+      "matchFileNames": ["deps.ini"],
+      "matchUpdateTypes": ["major"],
+      "postUpgradeTasks": {
+        "commands": [
+          "find . -name '*.go' -exec sed -i -E 's#{{{depName}}}(/v[0-9]+)?([/\"])#{{{depName}}}/v{{{newMajor}}}\\2#g' {} +"
+        ],
+        "fileFilters": ["**/*.go"],
+        "executionMode": "update"
+      }
+    },
+    {
+      "description": "LTS branches only receive security fixes",
+      "matchBaseBranches": ["/^release\\/.+/"],
+      "enabled": false
+    }
+  ]
+}

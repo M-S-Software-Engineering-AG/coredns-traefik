@@ -1,0 +1,11 @@
+example.org:5354 {
+    reload 2s 1s
+    traefik __API_URL__ {
+        a 10.0.0.2
+        refreshinterval 1
+    }
+
+    debug
+    log
+    errors
+}

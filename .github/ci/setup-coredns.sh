@@ -21,6 +21,19 @@ if ! grep -q '^traefik:' "$COREDNS_DIR/plugin.cfg"; then
   mv "$COREDNS_DIR/plugin.cfg.tmp" "$COREDNS_DIR/plugin.cfg"
 fi
 
+# Pin the modules listed in deps.ini (CoreDNS's go.mod doesn't require them, so `go mod tidy`
+# would otherwise pull whatever is latest).
+pins=()
+while read -r pin; do pins+=("$pin"); done < <("$PLUGIN_DIR/.github/ci/deps.sh")
+
 cd "$COREDNS_DIR"
+(( ${#pins[@]} == 0 )) || go get "${pins[@]}"
 go generate
 go mod tidy
+
+# tidy keeps whatever the plugin imports. If a major bump in deps.ini isn't matched by the import
+# paths, tidy silently falls back to the old major, so fail here instead.
+for pin in ${pins[@]+"${pins[@]}"}; do
+  got="$(go list -m -f '{{.Version}}' "${pin%@*}" 2>/dev/null || true)"
+  [[ "$got" == "${pin#*@}" ]] || { echo "deps.ini pins $pin but the build uses '${got:-nothing}' - are the plugin's imports on that major?" >&2; exit 1; }
+done
