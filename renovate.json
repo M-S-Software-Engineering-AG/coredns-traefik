@@ -7,6 +7,7 @@
   "platformAutomerge": false,
   "rebaseWhen": "behind-base-branch",
   "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
   "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
     "enabled": true,
