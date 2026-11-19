@@ -9,25 +9,6 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: SBOM
-        run: .github/ci/sbom.sh traefik.cdx.json
-      - name: Trivy scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: sbom
-          scan-ref: traefik.cdx.json
-          severity: HIGH,CRITICAL
-          exit-code: '1'
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD^)
-          highest=$(git tag -l 'v*' --sort=-v:refname | head -1)
-          gh release create "$GITHUB_REF_NAME" traefik.cdx.json --generate-notes --notes-start-tag "$prev" \
-            --latest="$([ "$highest" = "$GITHUB_REF_NAME" ] && echo true || echo false)"
+    uses: M-S-Software-Engineering-AG/ci-workflows/.github/workflows/coredns-plugin-release.yml@main
+    with:
+      plugin-name: traefik
