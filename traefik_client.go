@@ -67,8 +67,6 @@ func (c *TraefikClient) GetHttpRouters() (*[]HttpRouter, error) {
 	return &result, nil
 }
 
-// Traefik serves at most per_page items per request and names the next page in
-// X-Next-Page, which is 1 (or absent) on the last page.
 func fetchPages(client *http.Client, routersUrl string, onPage func(body []byte) error) error {
 	for page := 1; page <= maxPages; {
 		body, next, err := fetchPage(client, fmt.Sprintf("%s?page=%d&per_page=%d", routersUrl, page, pageSize))
