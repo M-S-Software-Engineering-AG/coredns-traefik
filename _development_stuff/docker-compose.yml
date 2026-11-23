@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.7.19
+    image: traefik:v3.8.0
     command:
       # Expose the API/dashboard unauthenticated on :8080 so the plugin can poll
       # /api/http/routers without credentials. Development only.

@@ -24,7 +24,7 @@ jobs:
           # renovate: datasource=github-tags depName=coredns/coredns
           coredns=v1.15.0
           # renovate: datasource=docker depName=traefik
-          traefik_latest=v3.7.19
+          traefik_latest=v3.8.0
           # renovate: datasource=docker depName=traefik
           traefik_prev=v3.6.25
           # renovate: datasource=docker depName=traefik
