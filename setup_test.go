@@ -150,9 +150,9 @@ func TestTcpRoutersSetup(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "defaults to true",
+			name:  "defaults to false",
 			input: `traefik https://traefik.example.org/api { cname traefik.example.org }`,
-			want:  true,
+			want:  false,
 		},
 		{
 			name: "bare directive is true",
@@ -163,7 +163,7 @@ func TestTcpRoutersSetup(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "explicit false disables it",
+			name: "explicit false",
 			input: `traefik https://traefik.example.org/api {
 				cname traefik.example.org
 				tcprouters false

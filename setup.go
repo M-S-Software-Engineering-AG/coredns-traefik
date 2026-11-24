@@ -41,7 +41,6 @@ func createPlugin(c *caddy.Controller) (*Traefik, error) {
 			hostMatcher:     hostMatcher,
 			ttl:             defaultTtl,
 			refreshInterval: defaultRefreshInterval,
-			tcpRouters:      true,
 		}
 
 		defaultBaseUrl, err := url.Parse(defaultTraefikApiEndpoint)
